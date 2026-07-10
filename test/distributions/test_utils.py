@@ -2,15 +2,14 @@
 
 import torch
 from torch.distributions.utils import tril_matrix_to_vec, vec_to_tril_matrix
-from torch.testing._internal.common_utils import TestCase, run_tests
 from torch.testing._internal.common_device_type import (
     instantiate_device_type_tests,
     parametrize,
 )
+from torch.testing._internal.common_utils import run_tests, TestCase
 
 
 class TestUtils(TestCase):
-
     @parametrize(
         "shape",
         [
@@ -34,3 +33,4 @@ instantiate_device_type_tests(TestUtils, globals())
 
 if __name__ == "__main__":
     run_tests()
+    
