@@ -27,8 +27,7 @@ class TestUtils(TestCase):
             actual = mat.tril(diag)
             vec = tril_matrix_to_vec(actual, diag)
             tril_mat = vec_to_tril_matrix(vec, diag)
-            if not torch.allclose(tril_mat, actual):
-                raise AssertionError("Expected tril_mat and actual to be close")
+            self.assertEqual(tril_mat, actual, msg=f"diag={diag}, shape={shape}")
 
 
 instantiate_device_type_tests(TestUtils, globals())
