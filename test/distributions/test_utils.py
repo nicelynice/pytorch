@@ -1,31 +1,37 @@
-# Owner(s): ["module: distributions"]
-
-import pytest
+import unittest
 
 import torch
 from torch.distributions.utils import tril_matrix_to_vec, vec_to_tril_matrix
-from torch.testing._internal.common_utils import run_tests
-
-
-@pytest.mark.parametrize(
-    "shape",
-    [
-        (2, 2),
-        (3, 3),
-        (2, 4, 4),
-        (2, 2, 4, 4),
-    ],
+from torch.testing._internal.common_utils import TestCase, run_tests
+from torch.testing._internal.common_device_type import (
+    instantiate_device_type_tests,
+    parametrize,
 )
-def test_tril_matrix_to_vec(shape):
-    mat = torch.randn(shape)
-    n = mat.shape[-1]
-    for diag in range(-n, n):
-        actual = mat.tril(diag)
-        vec = tril_matrix_to_vec(actual, diag)
-        tril_mat = vec_to_tril_matrix(vec, diag)
-        if not torch.allclose(tril_mat, actual):
-            raise AssertionError("Expected tril_mat and actual to be close")
 
+
+class TestUtils(TestCase):
+
+    @parametrize(
+        "shape",
+        [
+            (2, 2),
+            (3, 3),
+            (2, 4, 4),
+            (2, 2, 4, 4),
+        ],
+    )
+    def test_tril_matrix_to_vec(self, device, shape):
+        mat = torch.randn(shape, device=device)
+        n = mat.shape[-1]
+        for diag in range(-n, n):
+            actual = mat.tril(diag)
+            vec = tril_matrix_to_vec(actual, diag)
+            tril_mat = vec_to_tril_matrix(vec, diag)
+            if not torch.allclose(tril_mat, actual):
+                raise AssertionError("Expected tril_mat and actual to be close")
+
+
+instantiate_device_type_tests(TestUtils, globals())
 
 if __name__ == "__main__":
     run_tests()
