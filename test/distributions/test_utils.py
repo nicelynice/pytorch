@@ -1,4 +1,4 @@
-import unittest
+# Owner(s): ["module: distributions"]
 
 import torch
 from torch.distributions.utils import tril_matrix_to_vec, vec_to_tril_matrix
