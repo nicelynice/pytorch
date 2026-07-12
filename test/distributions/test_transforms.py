@@ -254,11 +254,20 @@ def transform_case_id(transform_case):
     return transform_case[2]
 
 
+_TRANSFORMS_BY_DEVICE_AND_CACHE_SIZE: dict[tuple[int, str], tuple[Transform, ...]] = {}
+
+
 def get_transform(transform_case, device):
     cache_size, index, _ = transform_case
     if cache_size is None:
         return identity_transform
-    return get_transforms(cache_size, device)[index]
+    device_key = str(device)
+    key = (cache_size, device_key)
+    transforms = _TRANSFORMS_BY_DEVICE_AND_CACHE_SIZE.get(key)
+    if transforms is None:
+        transforms = tuple(get_transforms(cache_size, device_key))
+        _TRANSFORMS_BY_DEVICE_AND_CACHE_SIZE[key] = transforms
+    return transforms[index]
 
 
 TRANSFORMED_DISTRIBUTION_SHAPE_CASES = (
