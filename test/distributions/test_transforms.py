@@ -1,6 +1,7 @@
 # Owner(s): ["module: distributions"]
 
 import io
+from functools import cache
 from numbers import Number
 
 import torch
@@ -38,6 +39,7 @@ from torch.testing._internal.common_device_type import instantiate_device_type_t
 from torch.testing._internal.common_utils import parametrize, run_tests, TestCase
 
 
+@cache
 def get_transforms(cache_size, device):
     transforms = [
         AbsTransform(cache_size=cache_size),
@@ -122,7 +124,7 @@ def get_transforms(cache_size, device):
         ),
     ]
     transforms += [t.inv for t in transforms]
-    return transforms
+    return tuple(transforms)
 
 
 def reshape_transform(transform, shape):
@@ -254,20 +256,11 @@ def transform_case_id(transform_case):
     return transform_case[2]
 
 
-_TRANSFORMS_BY_DEVICE_AND_CACHE_SIZE: dict[tuple[int, str], tuple[Transform, ...]] = {}
-
-
 def get_transform(transform_case, device):
     cache_size, index, _ = transform_case
     if cache_size is None:
         return identity_transform
-    device_key = str(device)
-    key = (cache_size, device_key)
-    transforms = _TRANSFORMS_BY_DEVICE_AND_CACHE_SIZE.get(key)
-    if transforms is None:
-        transforms = tuple(get_transforms(cache_size, device_key))
-        _TRANSFORMS_BY_DEVICE_AND_CACHE_SIZE[key] = transforms
-    return transforms[index]
+    return get_transforms(cache_size, str(device))[index]
 
 
 TRANSFORMED_DISTRIBUTION_SHAPE_CASES = (
@@ -299,6 +292,7 @@ TRANSFORMED_DISTRIBUTION_SHAPE_CASES = (
 )
 
 
+@cache
 def get_transformed_distributions(device):
     transform0 = ExpTransform()
     transform1 = SoftmaxTransform()
@@ -312,7 +306,7 @@ def get_transformed_distributions(device):
         torch.zeros(3, 4, 4, device=device),
         torch.ones(3, 4, 4, device=device),
     )
-    return [
+    return (
         base_dist0,
         base_dist1,
         TransformedDistribution(base_dist0, [transform0]),
@@ -338,7 +332,7 @@ def get_transformed_distributions(device):
         TransformedDistribution(base_dist2, [transform1, transform2]),
         TransformedDistribution(base_dist2, [transform2, transform0]),
         TransformedDistribution(base_dist2, [transform2, transform1]),
-    ]
+    )
 
 
 class TestTransforms(TestCase):
@@ -351,7 +345,7 @@ class TestTransforms(TestCase):
     @parametrize("x_case", CACHE_INACTIVE_TRANSFORM_CASES, name_fn=transform_case_id)
     @parametrize("y_case", CACHE_INACTIVE_TRANSFORM_CASES, name_fn=transform_case_id)
     def test_equality(self, device, x_case, y_case):
-        transforms = get_transforms(cache_size=0, device=device)
+        transforms = get_transforms(0, str(device))
         x = transforms[x_case[1]]
         y = transforms[y_case[1]]
         if x is y:
