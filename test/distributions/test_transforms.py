@@ -3,8 +3,6 @@
 import io
 from numbers import Number
 
-import pytest
-
 import torch
 from torch.autograd import grad
 from torch.autograd.functional import jacobian
@@ -16,7 +14,6 @@ from torch.distributions import (
     TransformedDistribution,
 )
 from torch.distributions.transforms import (
-    _InverseTransform,
     AbsTransform,
     AffineTransform,
     ComposeTransform,
@@ -37,23 +34,36 @@ from torch.distributions.transforms import (
     Transform,
 )
 from torch.distributions.utils import tril_matrix_to_vec, vec_to_tril_matrix
-from torch.testing._internal.common_utils import run_tests
+from torch.testing._internal.common_device_type import instantiate_device_type_tests
+from torch.testing._internal.common_utils import parametrize, run_tests, TestCase
 
 
-def get_transforms(cache_size):
+def get_transforms(cache_size, device):
     transforms = [
         AbsTransform(cache_size=cache_size),
         ExpTransform(cache_size=cache_size),
         PowerTransform(exponent=2, cache_size=cache_size),
         PowerTransform(exponent=-2, cache_size=cache_size),
-        PowerTransform(exponent=torch.tensor(5.0).normal_(), cache_size=cache_size),
-        PowerTransform(exponent=torch.tensor(5.0).normal_(), cache_size=cache_size),
+        PowerTransform(
+            exponent=torch.tensor(5.0, device=device).normal_(), cache_size=cache_size
+        ),
+        PowerTransform(
+            exponent=torch.tensor(5.0, device=device).normal_(), cache_size=cache_size
+        ),
         SigmoidTransform(cache_size=cache_size),
         TanhTransform(cache_size=cache_size),
         AffineTransform(0, 1, cache_size=cache_size),
         AffineTransform(1, -2, cache_size=cache_size),
-        AffineTransform(torch.randn(5), torch.randn(5), cache_size=cache_size),
-        AffineTransform(torch.randn(4, 5), torch.randn(4, 5), cache_size=cache_size),
+        AffineTransform(
+            torch.randn(5, device=device),
+            torch.randn(5, device=device),
+            cache_size=cache_size,
+        ),
+        AffineTransform(
+            torch.randn(4, 5, device=device),
+            torch.randn(4, 5, device=device),
+            cache_size=cache_size,
+        ),
         SoftmaxTransform(cache_size=cache_size),
         SoftplusTransform(cache_size=cache_size),
         StickBreakingTransform(cache_size=cache_size),
@@ -63,14 +73,18 @@ def get_transforms(cache_size):
         ComposeTransform(
             [
                 AffineTransform(
-                    torch.randn(4, 5), torch.randn(4, 5), cache_size=cache_size
+                    torch.randn(4, 5, device=device),
+                    torch.randn(4, 5, device=device),
+                    cache_size=cache_size,
                 ),
             ]
         ),
         ComposeTransform(
             [
                 AffineTransform(
-                    torch.randn(4, 5), torch.randn(4, 5), cache_size=cache_size
+                    torch.randn(4, 5, device=device),
+                    torch.randn(4, 5, device=device),
+                    cache_size=cache_size,
                 ),
                 ExpTransform(cache_size=cache_size),
             ]
@@ -79,19 +93,33 @@ def get_transforms(cache_size):
             [
                 AffineTransform(0, 1, cache_size=cache_size),
                 AffineTransform(
-                    torch.randn(4, 5), torch.randn(4, 5), cache_size=cache_size
+                    torch.randn(4, 5, device=device),
+                    torch.randn(4, 5, device=device),
+                    cache_size=cache_size,
                 ),
                 AffineTransform(1, -2, cache_size=cache_size),
                 AffineTransform(
-                    torch.randn(4, 5), torch.randn(4, 5), cache_size=cache_size
+                    torch.randn(4, 5, device=device),
+                    torch.randn(4, 5, device=device),
+                    cache_size=cache_size,
                 ),
             ]
         ),
         ReshapeTransform((4, 5), (2, 5, 2)),
         IndependentTransform(
-            AffineTransform(torch.randn(5), torch.randn(5), cache_size=cache_size), 1
+            AffineTransform(
+                torch.randn(5, device=device),
+                torch.randn(5, device=device),
+                cache_size=cache_size,
+            ),
+            1,
         ),
-        CumulativeDistributionTransform(Normal(0, 1)),
+        CumulativeDistributionTransform(
+            Normal(
+                torch.tensor(0.0, device=device),
+                torch.tensor(1.0, device=device),
+            )
+        ),
     ]
     transforms += [t.inv for t in transforms]
     return transforms
@@ -126,26 +154,14 @@ def reshape_transform(transform, shape):
     return transform
 
 
-# Generate pytest ids
-def transform_id(x):
-    if not isinstance(x, Transform):
-        raise AssertionError(f"Expected Transform, got {type(x)}")
-    name = (
-        f"Inv({type(x._inv).__name__})"
-        if isinstance(x, _InverseTransform)
-        else f"{type(x).__name__}"
-    )
-    return f"{name}(cache_size={x._cache_size})"
-
-
-def generate_data(transform):
+def generate_data(transform, device):
     torch.manual_seed(1)
     while isinstance(transform, IndependentTransform):
         transform = transform.base_transform
     if isinstance(transform, ReshapeTransform):
-        return torch.randn(transform.in_shape)
+        return torch.randn(transform.in_shape, device=device)
     if isinstance(transform.inv, ReshapeTransform):
-        return torch.randn(transform.inv.out_shape)
+        return torch.randn(transform.inv.out_shape, device=device)
     domain = transform.domain
     while (
         isinstance(domain, constraints.independent)
@@ -153,25 +169,25 @@ def generate_data(transform):
     ):
         domain = domain.base_constraint
     codomain = transform.codomain
-    x = torch.empty(4, 5)
+    x = torch.empty(4, 5, device=device)
     positive_definite_constraints = [
         constraints.lower_cholesky,
         constraints.positive_definite,
     ]
     if domain in positive_definite_constraints:
-        x = torch.randn(6, 6)
+        x = torch.randn(6, 6, device=device)
         x = x.tril(-1) + x.diag().exp().diag_embed()
         if domain is constraints.positive_definite:
             return x @ x.T
         return x
     elif codomain in positive_definite_constraints:
-        return torch.randn(6, 6)
+        return torch.randn(6, 6, device=device)
     elif domain is constraints.real:
         return x.normal_()
     elif domain is constraints.real_vector:
         # For corr_cholesky the last dim in the vector
         # must be of size (dim * dim) // 2
-        x = torch.empty(3, 6)
+        x = torch.empty(3, 6, device=device)
         x = x.normal_()
         return x
     elif domain is constraints.positive:
@@ -187,7 +203,7 @@ def generate_data(transform):
         x /= x.sum(-1, True)
         return x
     elif domain is constraints.corr_cholesky:
-        x = torch.empty(4, 5, 5)
+        x = torch.empty(4, 5, 5, device=device)
         x = x.normal_().tril()
         x /= x.norm(dim=-1, keepdim=True)
         x.diagonal(dim1=-1).copy_(x.diagonal(dim1=-1).abs())
@@ -195,467 +211,583 @@ def generate_data(transform):
     raise ValueError(f"Unsupported domain: {domain}")
 
 
-TRANSFORMS_CACHE_ACTIVE = get_transforms(cache_size=1)
-TRANSFORMS_CACHE_INACTIVE = get_transforms(cache_size=0)
-ALL_TRANSFORMS = (
-    TRANSFORMS_CACHE_ACTIVE + TRANSFORMS_CACHE_INACTIVE + [identity_transform]
+_BASE_TRANSFORM_NAMES = (
+    "AbsTransform",
+    "ExpTransform",
+    "PowerTransform",
+    "PowerTransform",
+    "PowerTransform",
+    "PowerTransform",
+    "SigmoidTransform",
+    "TanhTransform",
+    "AffineTransform",
+    "AffineTransform",
+    "AffineTransform",
+    "AffineTransform",
+    "SoftmaxTransform",
+    "SoftplusTransform",
+    "StickBreakingTransform",
+    "LowerCholeskyTransform",
+    "CorrCholeskyTransform",
+    "PositiveDefiniteTransform",
+    "ComposeTransform",
+    "ComposeTransform",
+    "ComposeTransform",
+    "ReshapeTransform",
+    "IndependentTransform",
+    "CumulativeDistributionTransform",
+)
+_TRANSFORM_NAMES = _BASE_TRANSFORM_NAMES + tuple(
+    f"Inv_{name}" for name in _BASE_TRANSFORM_NAMES
+)
+ALL_TRANSFORM_CASES = tuple(
+    (cache_size, index, f"{name}_{index}_cache_size_{cache_size}")
+    for cache_size in (1, 0)
+    for index, name in enumerate(_TRANSFORM_NAMES)
+) + ((None, 0, "identity_transform"),)
+CACHE_INACTIVE_TRANSFORM_CASES = tuple(
+    transform_case for transform_case in ALL_TRANSFORM_CASES if transform_case[0] == 0
 )
 
 
-@pytest.mark.parametrize("transform", ALL_TRANSFORMS, ids=transform_id)
-def test_inv_inv(transform, ids=transform_id):
-    if transform.inv.inv is not transform:
-        raise AssertionError("Expected transform.inv.inv is transform")
+def transform_case_id(transform_case):
+    return transform_case[2]
 
 
-@pytest.mark.parametrize("x", TRANSFORMS_CACHE_INACTIVE, ids=transform_id)
-@pytest.mark.parametrize("y", TRANSFORMS_CACHE_INACTIVE, ids=transform_id)
-def test_equality(x, y):
-    if x is y:
-        if x != y:
-            raise AssertionError("Expected x == y when x is y")
-    else:
-        if x == y:
-            raise AssertionError("Expected x != y when x is not y")
-    if identity_transform != identity_transform.inv:
-        raise AssertionError("Expected identity_transform == identity_transform.inv")
+def get_transform(transform_case, device):
+    cache_size, index, _ = transform_case
+    if cache_size is None:
+        return identity_transform
+    return get_transforms(cache_size, device)[index]
 
 
-@pytest.mark.parametrize("transform", ALL_TRANSFORMS, ids=transform_id)
-def test_with_cache(transform):
-    if transform._cache_size == 0:
-        transform = transform.with_cache(1)
-    if transform._cache_size != 1:
-        raise AssertionError(f"Expected cache_size 1, got {transform._cache_size}")
-    x = generate_data(transform).requires_grad_()
-    try:
-        y = transform(x)
-    except NotImplementedError:
-        pytest.skip("Not implemented.")
-    y2 = transform(x)
-    if y2 is not y:
-        raise AssertionError("Expected y2 is y with caching")
+TRANSFORMED_DISTRIBUTION_SHAPE_CASES = (
+    ((4, 4), (), 0),
+    ((4,), (4,), 1),
+    ((4, 4), (), 2),
+    ((4,), (4,), 3),
+    ((4,), (4,), 4),
+    ((), (4, 4), 5),
+    ((4,), (4,), 6),
+    ((), (4, 4), 7),
+    ((), (4, 4), 8),
+    ((), (4, 4), 9),
+    ((4,), (4,), 10),
+    ((4,), (4,), 11),
+    ((), (4, 4), 12),
+    ((4,), (4,), 13),
+    ((), (4, 4), 14),
+    ((4,), (4,), 15),
+    ((), (4, 4), 16),
+    ((), (4, 4), 17),
+    ((), (4, 4), 18),
+    ((3, 4, 4), (), 19),
+    ((3,), (4, 4), 20),
+    ((3,), (4, 4), 21),
+    ((3,), (4, 4), 22),
+    ((3,), (4, 4), 23),
+    ((3,), (4, 4), 24),
+)
 
 
-@pytest.mark.parametrize("transform", ALL_TRANSFORMS, ids=transform_id)
-@pytest.mark.parametrize("test_cached", [True, False])
-def test_forward_inverse(transform, test_cached):
-    x = generate_data(transform).requires_grad_()
-    if not transform.domain.check(x).all():
-        raise AssertionError("Input data are not valid for domain")
-    try:
-        y = transform(x)
-    except NotImplementedError:
-        pytest.skip("Not implemented.")
-    if y.shape != transform.forward_shape(x.shape):
-        raise AssertionError(
-            f"Expected y.shape {transform.forward_shape(x.shape)}, got {y.shape}"
-        )
-    if test_cached:
-        x2 = transform.inv(y)  # should be implemented at least by caching
-    else:
-        try:
-            x2 = transform.inv(y.clone())  # bypass cache
-        except NotImplementedError:
-            pytest.skip("Not implemented.")
-    if x2.shape != transform.inverse_shape(y.shape):
-        raise AssertionError(
-            f"Expected x2.shape {transform.inverse_shape(y.shape)}, got {x2.shape}"
-        )
-    y2 = transform(x2)
-    if transform.bijective:
-        # verify function inverse
-        if not torch.allclose(x2, x, atol=1e-4, equal_nan=True):
-            raise AssertionError(
-                "\n".join(
-                    [
-                        f"{transform} t.inv(t(-)) error",
-                        f"x = {x}",
-                        f"y = t(x) = {y}",
-                        f"x2 = t.inv(y) = {x2}",
-                    ]
-                )
-            )
-    else:
-        # verify weaker function pseudo-inverse
-        if not torch.allclose(y2, y, atol=1e-4, equal_nan=True):
-            raise AssertionError(
-                "\n".join(
-                    [
-                        f"{transform} t(t.inv(t(-))) error",
-                        f"x = {x}",
-                        f"y = t(x) = {y}",
-                        f"x2 = t.inv(y) = {x2}",
-                        f"y2 = t(x2) = {y2}",
-                    ]
-                )
-            )
-
-
-def test_compose_transform_shapes():
+def get_transformed_distributions(device):
     transform0 = ExpTransform()
     transform1 = SoftmaxTransform()
     transform2 = LowerCholeskyTransform()
-
-    if transform0.event_dim != 0:
-        raise AssertionError(
-            f"Expected transform0.event_dim == 0, got {transform0.event_dim}"
-        )
-    if transform1.event_dim != 1:
-        raise AssertionError(
-            f"Expected transform1.event_dim == 1, got {transform1.event_dim}"
-        )
-    if transform2.event_dim != 2:
-        raise AssertionError(
-            f"Expected transform2.event_dim == 2, got {transform2.event_dim}"
-        )
-    if ComposeTransform([transform0, transform1]).event_dim != 1:
-        raise AssertionError("Expected ComposeTransform([t0, t1]).event_dim == 1")
-    if ComposeTransform([transform0, transform2]).event_dim != 2:
-        raise AssertionError("Expected ComposeTransform([t0, t2]).event_dim == 2")
-    if ComposeTransform([transform1, transform2]).event_dim != 2:
-        raise AssertionError("Expected ComposeTransform([t1, t2]).event_dim == 2")
-
-
-transform0 = ExpTransform()
-transform1 = SoftmaxTransform()
-transform2 = LowerCholeskyTransform()
-base_dist0 = Normal(torch.zeros(4, 4), torch.ones(4, 4))
-base_dist1 = Dirichlet(torch.ones(4, 4))
-base_dist2 = Normal(torch.zeros(3, 4, 4), torch.ones(3, 4, 4))
-
-
-@pytest.mark.parametrize(
-    ("batch_shape", "event_shape", "dist"),
-    [
-        ((4, 4), (), base_dist0),
-        ((4,), (4,), base_dist1),
-        ((4, 4), (), TransformedDistribution(base_dist0, [transform0])),
-        ((4,), (4,), TransformedDistribution(base_dist0, [transform1])),
-        ((4,), (4,), TransformedDistribution(base_dist0, [transform0, transform1])),
-        ((), (4, 4), TransformedDistribution(base_dist0, [transform0, transform2])),
-        ((4,), (4,), TransformedDistribution(base_dist0, [transform1, transform0])),
-        ((), (4, 4), TransformedDistribution(base_dist0, [transform1, transform2])),
-        ((), (4, 4), TransformedDistribution(base_dist0, [transform2, transform0])),
-        ((), (4, 4), TransformedDistribution(base_dist0, [transform2, transform1])),
-        ((4,), (4,), TransformedDistribution(base_dist1, [transform0])),
-        ((4,), (4,), TransformedDistribution(base_dist1, [transform1])),
-        ((), (4, 4), TransformedDistribution(base_dist1, [transform2])),
-        ((4,), (4,), TransformedDistribution(base_dist1, [transform0, transform1])),
-        ((), (4, 4), TransformedDistribution(base_dist1, [transform0, transform2])),
-        ((4,), (4,), TransformedDistribution(base_dist1, [transform1, transform0])),
-        ((), (4, 4), TransformedDistribution(base_dist1, [transform1, transform2])),
-        ((), (4, 4), TransformedDistribution(base_dist1, [transform2, transform0])),
-        ((), (4, 4), TransformedDistribution(base_dist1, [transform2, transform1])),
-        ((3, 4, 4), (), base_dist2),
-        ((3,), (4, 4), TransformedDistribution(base_dist2, [transform2])),
-        ((3,), (4, 4), TransformedDistribution(base_dist2, [transform0, transform2])),
-        ((3,), (4, 4), TransformedDistribution(base_dist2, [transform1, transform2])),
-        ((3,), (4, 4), TransformedDistribution(base_dist2, [transform2, transform0])),
-        ((3,), (4, 4), TransformedDistribution(base_dist2, [transform2, transform1])),
-    ],
-)
-def test_transformed_distribution_shapes(batch_shape, event_shape, dist):
-    if dist.batch_shape != batch_shape:
-        raise AssertionError(
-            f"Expected batch_shape {batch_shape}, got {dist.batch_shape}"
-        )
-    if dist.event_shape != event_shape:
-        raise AssertionError(
-            f"Expected event_shape {event_shape}, got {dist.event_shape}"
-        )
-    x = dist.rsample()
-    try:
-        dist.log_prob(x)  # this should not crash
-    except NotImplementedError:
-        pytest.skip("Not implemented.")
+    base_dist0 = Normal(
+        torch.zeros(4, 4, device=device),
+        torch.ones(4, 4, device=device),
+    )
+    base_dist1 = Dirichlet(torch.ones(4, 4, device=device))
+    base_dist2 = Normal(
+        torch.zeros(3, 4, 4, device=device),
+        torch.ones(3, 4, 4, device=device),
+    )
+    return [
+        base_dist0,
+        base_dist1,
+        TransformedDistribution(base_dist0, [transform0]),
+        TransformedDistribution(base_dist0, [transform1]),
+        TransformedDistribution(base_dist0, [transform0, transform1]),
+        TransformedDistribution(base_dist0, [transform0, transform2]),
+        TransformedDistribution(base_dist0, [transform1, transform0]),
+        TransformedDistribution(base_dist0, [transform1, transform2]),
+        TransformedDistribution(base_dist0, [transform2, transform0]),
+        TransformedDistribution(base_dist0, [transform2, transform1]),
+        TransformedDistribution(base_dist1, [transform0]),
+        TransformedDistribution(base_dist1, [transform1]),
+        TransformedDistribution(base_dist1, [transform2]),
+        TransformedDistribution(base_dist1, [transform0, transform1]),
+        TransformedDistribution(base_dist1, [transform0, transform2]),
+        TransformedDistribution(base_dist1, [transform1, transform0]),
+        TransformedDistribution(base_dist1, [transform1, transform2]),
+        TransformedDistribution(base_dist1, [transform2, transform0]),
+        TransformedDistribution(base_dist1, [transform2, transform1]),
+        base_dist2,
+        TransformedDistribution(base_dist2, [transform2]),
+        TransformedDistribution(base_dist2, [transform0, transform2]),
+        TransformedDistribution(base_dist2, [transform1, transform2]),
+        TransformedDistribution(base_dist2, [transform2, transform0]),
+        TransformedDistribution(base_dist2, [transform2, transform1]),
+    ]
 
 
-@pytest.mark.parametrize("transform", TRANSFORMS_CACHE_INACTIVE, ids=transform_id)
-def test_jit_fwd(transform):
-    x = generate_data(transform).requires_grad_()
+class TestTransforms(TestCase):
+    @parametrize("transform_case", ALL_TRANSFORM_CASES, name_fn=transform_case_id)
+    def test_inv_inv(self, device, transform_case):
+        transform = get_transform(transform_case, device)
+        if transform.inv.inv is not transform:
+            raise AssertionError("Expected transform.inv.inv is transform")
 
-    def f(x):
-        return transform(x)
-
-    try:
-        traced_f = torch.jit.trace(f, (x,))
-    except NotImplementedError:
-        pytest.skip("Not implemented.")
-
-    # check on different inputs
-    x = generate_data(transform).requires_grad_()
-    if not torch.allclose(f(x), traced_f(x), atol=1e-5, equal_nan=True):
-        raise AssertionError("JIT forward output does not match")
-
-
-@pytest.mark.parametrize("transform", TRANSFORMS_CACHE_INACTIVE, ids=transform_id)
-def test_jit_inv(transform):
-    y = generate_data(transform.inv).requires_grad_()
-
-    def f(y):
-        return transform.inv(y)
-
-    try:
-        traced_f = torch.jit.trace(f, (y,))
-    except NotImplementedError:
-        pytest.skip("Not implemented.")
-
-    # check on different inputs
-    y = generate_data(transform.inv).requires_grad_()
-    if not torch.allclose(f(y), traced_f(y), atol=1e-5, equal_nan=True):
-        raise AssertionError("JIT inverse output does not match")
-
-
-@pytest.mark.parametrize("transform", TRANSFORMS_CACHE_INACTIVE, ids=transform_id)
-def test_jit_jacobian(transform):
-    x = generate_data(transform).requires_grad_()
-
-    def f(x):
-        y = transform(x)
-        return transform.log_abs_det_jacobian(x, y)
-
-    try:
-        traced_f = torch.jit.trace(f, (x,))
-    except NotImplementedError:
-        pytest.skip("Not implemented.")
-
-    # check on different inputs
-    x = generate_data(transform).requires_grad_()
-    if not torch.allclose(f(x), traced_f(x), atol=1e-5, equal_nan=True):
-        raise AssertionError("JIT jacobian output does not match")
-
-
-@pytest.mark.parametrize("transform", ALL_TRANSFORMS, ids=transform_id)
-def test_jacobian(transform):
-    x = generate_data(transform)
-    try:
-        y = transform(x)
-        actual = transform.log_abs_det_jacobian(x, y)
-    except NotImplementedError:
-        pytest.skip("Not implemented.")
-    # Test shape
-    target_shape = x.shape[: x.dim() - transform.domain.event_dim]
-    if actual.shape != target_shape:
-        raise AssertionError(f"Expected shape {target_shape}, got {actual.shape}")
-
-    # Expand if required
-    transform = reshape_transform(transform, x.shape)
-    ndims = len(x.shape)
-    event_dim = ndims - transform.domain.event_dim
-    x_ = x.view((-1,) + x.shape[event_dim:])
-    n = x_.shape[0]
-    # Reshape to squash batch dims to a single batch dim
-    transform = reshape_transform(transform, x_.shape)
-
-    # 1. Transforms with unit jacobian
-    if isinstance(transform, ReshapeTransform) or isinstance(
-        transform.inv, ReshapeTransform
-    ):
-        expected = x.new_zeros(x.shape[x.dim() - transform.domain.event_dim])
-        expected = x.new_zeros(x.shape[x.dim() - transform.domain.event_dim])
-    # 2. Transforms with 0 off-diagonal elements
-    elif transform.domain.event_dim == 0:
-        jac = jacobian(transform, x_)
-        # assert off-diagonal elements are zero
-        if not torch.allclose(jac, jac.diagonal().diag_embed()):
-            raise AssertionError("Off-diagonal elements are not zero")
-        expected = jac.diagonal().abs().log().reshape(x.shape)
-    # 3. Transforms with non-0 off-diagonal elements
-    else:
-        if isinstance(transform, CorrCholeskyTransform):
-            jac = jacobian(lambda x: tril_matrix_to_vec(transform(x), diag=-1), x_)
-        elif isinstance(transform.inv, CorrCholeskyTransform):
-            jac = jacobian(
-                lambda x: transform(vec_to_tril_matrix(x, diag=-1)),
-                tril_matrix_to_vec(x_, diag=-1),
-            )
-        elif isinstance(transform, StickBreakingTransform):
-            jac = jacobian(lambda x: transform(x)[..., :-1], x_)
+    @parametrize("x_case", CACHE_INACTIVE_TRANSFORM_CASES, name_fn=transform_case_id)
+    @parametrize("y_case", CACHE_INACTIVE_TRANSFORM_CASES, name_fn=transform_case_id)
+    def test_equality(self, device, x_case, y_case):
+        transforms = get_transforms(cache_size=0, device=device)
+        x = transforms[x_case[1]]
+        y = transforms[y_case[1]]
+        if x is y:
+            if x != y:
+                raise AssertionError("Expected x == y when x is y")
         else:
-            jac = jacobian(transform, x_)
+            if x == y:
+                raise AssertionError("Expected x != y when x is not y")
+        if identity_transform != identity_transform.inv:
+            raise AssertionError(
+                "Expected identity_transform == identity_transform.inv"
+            )
 
-        # Note that jacobian will have shape (batch_dims, y_event_dims, batch_dims, x_event_dims)
-        # However, batches are independent so this can be converted into a (batch_dims, event_dims, event_dims)
-        # after reshaping the event dims (see above) to give a batched square matrix whose determinant
-        # can be computed.
-        gather_idx_shape = list(jac.shape)
-        gather_idx_shape[-2] = 1
-        gather_idxs = (
-            torch.arange(n)
-            .reshape((n,) + (1,) * (len(jac.shape) - 1))
-            .expand(gather_idx_shape)
-        )
-        jac = jac.gather(-2, gather_idxs).squeeze(-2)
-        out_ndims = jac.shape[-2]
-        jac = jac[
-            ..., :out_ndims
-        ]  # Remove extra zero-valued dims (for inverse stick-breaking).
-        expected = torch.slogdet(jac).logabsdet
+    @parametrize("transform_case", ALL_TRANSFORM_CASES, name_fn=transform_case_id)
+    def test_with_cache(self, device, transform_case):
+        transform = get_transform(transform_case, device)
+        if transform._cache_size == 0:
+            transform = transform.with_cache(1)
+        if transform._cache_size != 1:
+            raise AssertionError(f"Expected cache_size 1, got {transform._cache_size}")
+        x = generate_data(transform, device).requires_grad_()
+        try:
+            y = transform(x)
+        except NotImplementedError:
+            self.skipTest("Not implemented.")
+        y2 = transform(x)
+        if y2 is not y:
+            raise AssertionError("Expected y2 is y with caching")
 
-    if not torch.allclose(actual, expected, atol=1e-5):
-        raise AssertionError("Jacobian computation does not match expected")
+    @parametrize("transform_case", ALL_TRANSFORM_CASES, name_fn=transform_case_id)
+    @parametrize("test_cached", [True, False])
+    def test_forward_inverse(self, device, transform_case, test_cached):
+        transform = get_transform(transform_case, device)
+        x = generate_data(transform, device).requires_grad_()
+        if not transform.domain.check(x).all():
+            raise AssertionError("Input data are not valid for domain")
+        try:
+            y = transform(x)
+        except NotImplementedError:
+            self.skipTest("Not implemented.")
+        if y.shape != transform.forward_shape(x.shape):
+            raise AssertionError(
+                f"Expected y.shape {transform.forward_shape(x.shape)}, got {y.shape}"
+            )
+        if test_cached:
+            x2 = transform.inv(y)  # should be implemented at least by caching
+        else:
+            try:
+                x2 = transform.inv(y.clone())  # bypass cache
+            except NotImplementedError:
+                self.skipTest("Not implemented.")
+        if x2.shape != transform.inverse_shape(y.shape):
+            raise AssertionError(
+                f"Expected x2.shape {transform.inverse_shape(y.shape)}, got {x2.shape}"
+            )
+        y2 = transform(x2)
+        if transform.bijective:
+            # verify function inverse
+            if not torch.allclose(x2, x, atol=1e-4, equal_nan=True):
+                raise AssertionError(
+                    "\n".join(
+                        [
+                            f"{transform} t.inv(t(-)) error",
+                            f"x = {x}",
+                            f"y = t(x) = {y}",
+                            f"x2 = t.inv(y) = {x2}",
+                        ]
+                    )
+                )
+        else:
+            # verify weaker function pseudo-inverse
+            if not torch.allclose(y2, y, atol=1e-4, equal_nan=True):
+                raise AssertionError(
+                    "\n".join(
+                        [
+                            f"{transform} t(t.inv(t(-))) error",
+                            f"x = {x}",
+                            f"y = t(x) = {y}",
+                            f"x2 = t.inv(y) = {x2}",
+                            f"y2 = t(x2) = {y2}",
+                        ]
+                    )
+                )
 
+    def test_compose_transform_shapes(self, device):
+        transform0 = ExpTransform()
+        transform1 = SoftmaxTransform()
+        transform2 = LowerCholeskyTransform()
 
-@pytest.mark.parametrize(
-    "event_dims", [(0,), (1,), (2, 3), (0, 1, 2), (1, 2, 0), (2, 0, 1)], ids=str
-)
-def test_compose_affine(event_dims):
-    transforms = [
-        AffineTransform(torch.zeros((1,) * e), 1, event_dim=e) for e in event_dims
-    ]
-    transform = ComposeTransform(transforms)
-    if transform.codomain.event_dim != max(event_dims):
-        raise AssertionError(
-            f"Expected codomain.event_dim {max(event_dims)}, got {transform.codomain.event_dim}"
-        )
-    if transform.domain.event_dim != max(event_dims):
-        raise AssertionError(
-            f"Expected domain.event_dim {max(event_dims)}, got {transform.domain.event_dim}"
-        )
+        if transform0.event_dim != 0:
+            raise AssertionError(
+                f"Expected transform0.event_dim == 0, got {transform0.event_dim}"
+            )
+        if transform1.event_dim != 1:
+            raise AssertionError(
+                f"Expected transform1.event_dim == 1, got {transform1.event_dim}"
+            )
+        if transform2.event_dim != 2:
+            raise AssertionError(
+                f"Expected transform2.event_dim == 2, got {transform2.event_dim}"
+            )
+        if ComposeTransform([transform0, transform1]).event_dim != 1:
+            raise AssertionError("Expected ComposeTransform([t0, t1]).event_dim == 1")
+        if ComposeTransform([transform0, transform2]).event_dim != 2:
+            raise AssertionError("Expected ComposeTransform([t0, t2]).event_dim == 2")
+        if ComposeTransform([transform1, transform2]).event_dim != 2:
+            raise AssertionError("Expected ComposeTransform([t1, t2]).event_dim == 2")
 
-    base_dist = Normal(0, 1)
-    if transform.domain.event_dim:
-        base_dist = base_dist.expand((1,) * transform.domain.event_dim)
-    dist = TransformedDistribution(base_dist, transform.parts)
-    if dist.support.event_dim != max(event_dims):
-        raise AssertionError(
-            f"Expected support.event_dim {max(event_dims)}, got {dist.support.event_dim}"
-        )
-
-    base_dist = Dirichlet(torch.ones(5))
-    if transform.domain.event_dim > 1:
-        base_dist = base_dist.expand((1,) * (transform.domain.event_dim - 1))
-    dist = TransformedDistribution(base_dist, transforms)
-    if dist.support.event_dim != max(1, *event_dims):
-        raise AssertionError(
-            f"Expected support.event_dim {max(1, *event_dims)}, got {dist.support.event_dim}"
-        )
-
-
-@pytest.mark.parametrize("batch_shape", [(), (6,), (5, 4)], ids=str)
-def test_compose_reshape(batch_shape):
-    transforms = [
-        ReshapeTransform((), ()),
-        ReshapeTransform((2,), (1, 2)),
-        ReshapeTransform((3, 1, 2), (6,)),
-        ReshapeTransform((6,), (2, 3)),
-    ]
-    transform = ComposeTransform(transforms)
-    if transform.codomain.event_dim != 2:
-        raise AssertionError(
-            f"Expected codomain.event_dim 2, got {transform.codomain.event_dim}"
-        )
-    if transform.domain.event_dim != 2:
-        raise AssertionError(
-            f"Expected domain.event_dim 2, got {transform.domain.event_dim}"
-        )
-    data = torch.randn(batch_shape + (3, 2))
-    if transform(data).shape != batch_shape + (2, 3):
-        raise AssertionError(
-            f"Expected shape {batch_shape + (2, 3)}, got {transform(data).shape}"
-        )
-
-    dist = TransformedDistribution(Normal(data, 1), transforms)
-    if dist.batch_shape != batch_shape:
-        raise AssertionError(
-            f"Expected batch_shape {batch_shape}, got {dist.batch_shape}"
-        )
-    if dist.event_shape != (2, 3):
-        raise AssertionError(f"Expected event_shape (2, 3), got {dist.event_shape}")
-    if dist.support.event_dim != 2:
-        raise AssertionError(
-            f"Expected support.event_dim 2, got {dist.support.event_dim}"
-        )
-
-
-@pytest.mark.parametrize("sample_shape", [(), (7,)], ids=str)
-@pytest.mark.parametrize("transform_dim", [0, 1, 2])
-@pytest.mark.parametrize("base_batch_dim", [0, 1, 2])
-@pytest.mark.parametrize("base_event_dim", [0, 1, 2])
-@pytest.mark.parametrize("num_transforms", [0, 1, 2, 3])
-def test_transformed_distribution(
-    base_batch_dim, base_event_dim, transform_dim, num_transforms, sample_shape
-):
-    shape = torch.Size([2, 3, 4, 5])
-    base_dist = Normal(0, 1)
-    base_dist = base_dist.expand(shape[4 - base_batch_dim - base_event_dim :])
-    if base_event_dim:
-        base_dist = Independent(base_dist, base_event_dim)
-    transforms = [
-        AffineTransform(torch.zeros(shape[4 - transform_dim :]), 1),
-        ReshapeTransform((4, 5), (20,)),
-        ReshapeTransform((3, 20), (6, 10)),
-    ]
-    transforms = transforms[:num_transforms]
-    transform = ComposeTransform(transforms)
-
-    # Check validation in .__init__().
-    if base_batch_dim + base_event_dim < transform.domain.event_dim:
-        with pytest.raises(ValueError):
-            TransformedDistribution(base_dist, transforms)
-        return
-    d = TransformedDistribution(base_dist, transforms)
-
-    # Check sampling is sufficiently expanded.
-    x = d.sample(sample_shape)
-    expected_shape = sample_shape + d.batch_shape + d.event_shape
-    if x.shape != expected_shape:
-        raise AssertionError(f"Expected sample shape {expected_shape}, got {x.shape}")
-    num_unique = len(set(x.reshape(-1).tolist()))
-    if num_unique < 0.9 * x.numel():
-        raise AssertionError(
-            f"Expected num_unique >= {0.9 * x.numel()}, got {num_unique}"
-        )
-
-    # Check log_prob shape on full samples.
-    log_prob = d.log_prob(x)
-    if log_prob.shape != sample_shape + d.batch_shape:
-        raise AssertionError(
-            f"Expected log_prob shape {sample_shape + d.batch_shape}, got {log_prob.shape}"
-        )
-
-    # Check log_prob shape on partial samples.
-    y = x
-    while y.dim() > len(d.event_shape):
-        y = y[0]
-    log_prob = d.log_prob(y)
-    if log_prob.shape != d.batch_shape:
-        raise AssertionError(
-            f"Expected log_prob shape {d.batch_shape}, got {log_prob.shape}"
-        )
-
-
-def test_save_load_transform():
-    # Evaluating `log_prob` populates the `_inv` cache, which can
-    # contain reference cycles. Here, we check that `__getstate__`
-    # drops the cache, and that we can evaluate the density after loading.
-    dist = TransformedDistribution(Normal(0, 1), [AffineTransform(2, 3)])
-    x = torch.linspace(0, 1, 10)
-    log_prob = dist.log_prob(x)
-    stream = io.BytesIO()
-    torch.save(dist, stream)
-    stream.seek(0)
-    with torch.serialization.safe_globals(
-        [TransformedDistribution, AffineTransform, Normal]
+    @parametrize(
+        "batch_shape, event_shape, dist_index",
+        TRANSFORMED_DISTRIBUTION_SHAPE_CASES,
+        name_fn=lambda batch_shape, event_shape, dist_index: f"case_{dist_index}",
+    )
+    def test_transformed_distribution_shapes(
+        self, device, batch_shape, event_shape, dist_index
     ):
-        other = torch.load(stream)
-    if not torch.allclose(log_prob, other.log_prob(x)):
-        raise AssertionError("Loaded distribution log_prob does not match original")
+        dist = get_transformed_distributions(device)[dist_index]
+        if dist.batch_shape != batch_shape:
+            raise AssertionError(
+                f"Expected batch_shape {batch_shape}, got {dist.batch_shape}"
+            )
+        if dist.event_shape != event_shape:
+            raise AssertionError(
+                f"Expected event_shape {event_shape}, got {dist.event_shape}"
+            )
+        x = dist.rsample()
+        try:
+            dist.log_prob(x)  # this should not crash
+        except NotImplementedError:
+            self.skipTest("Not implemented.")
+
+    @parametrize(
+        "transform_case", CACHE_INACTIVE_TRANSFORM_CASES, name_fn=transform_case_id
+    )
+    def test_jit_fwd(self, device, transform_case):
+        transform = get_transform(transform_case, device)
+        x = generate_data(transform, device).requires_grad_()
+
+        def f(x):
+            return transform(x)
+
+        try:
+            traced_f = torch.jit.trace(f, (x,))
+        except NotImplementedError:
+            self.skipTest("Not implemented.")
+
+        # check on different inputs
+        x = generate_data(transform, device).requires_grad_()
+        if not torch.allclose(f(x), traced_f(x), atol=1e-5, equal_nan=True):
+            raise AssertionError("JIT forward output does not match")
+
+    @parametrize(
+        "transform_case", CACHE_INACTIVE_TRANSFORM_CASES, name_fn=transform_case_id
+    )
+    def test_jit_inv(self, device, transform_case):
+        transform = get_transform(transform_case, device)
+        y = generate_data(transform.inv, device).requires_grad_()
+
+        def f(y):
+            return transform.inv(y)
+
+        try:
+            traced_f = torch.jit.trace(f, (y,))
+        except NotImplementedError:
+            self.skipTest("Not implemented.")
+
+        # check on different inputs
+        y = generate_data(transform.inv, device).requires_grad_()
+        if not torch.allclose(f(y), traced_f(y), atol=1e-5, equal_nan=True):
+            raise AssertionError("JIT inverse output does not match")
+
+    @parametrize(
+        "transform_case", CACHE_INACTIVE_TRANSFORM_CASES, name_fn=transform_case_id
+    )
+    def test_jit_jacobian(self, device, transform_case):
+        transform = get_transform(transform_case, device)
+        x = generate_data(transform, device).requires_grad_()
+
+        def f(x):
+            y = transform(x)
+            return transform.log_abs_det_jacobian(x, y)
+
+        try:
+            traced_f = torch.jit.trace(f, (x,))
+        except NotImplementedError:
+            self.skipTest("Not implemented.")
+
+        # check on different inputs
+        x = generate_data(transform, device).requires_grad_()
+        if not torch.allclose(f(x), traced_f(x), atol=1e-5, equal_nan=True):
+            raise AssertionError("JIT jacobian output does not match")
+
+    @parametrize("transform_case", ALL_TRANSFORM_CASES, name_fn=transform_case_id)
+    def test_jacobian(self, device, transform_case):
+        transform = get_transform(transform_case, device)
+        x = generate_data(transform, device)
+        try:
+            y = transform(x)
+            actual = transform.log_abs_det_jacobian(x, y)
+        except NotImplementedError:
+            self.skipTest("Not implemented.")
+        # Test shape
+        target_shape = x.shape[: x.dim() - transform.domain.event_dim]
+        if actual.shape != target_shape:
+            raise AssertionError(f"Expected shape {target_shape}, got {actual.shape}")
+
+        # Expand if required
+        transform = reshape_transform(transform, x.shape)
+        ndims = len(x.shape)
+        event_dim = ndims - transform.domain.event_dim
+        x_ = x.view((-1,) + x.shape[event_dim:])
+        n = x_.shape[0]
+        # Reshape to squash batch dims to a single batch dim
+        transform = reshape_transform(transform, x_.shape)
+
+        # 1. Transforms with unit jacobian
+        if isinstance(transform, ReshapeTransform) or isinstance(
+            transform.inv, ReshapeTransform
+        ):
+            expected = x.new_zeros(x.shape[x.dim() - transform.domain.event_dim])
+            expected = x.new_zeros(x.shape[x.dim() - transform.domain.event_dim])
+        # 2. Transforms with 0 off-diagonal elements
+        elif transform.domain.event_dim == 0:
+            jac = jacobian(transform, x_)
+            # assert off-diagonal elements are zero
+            if not torch.allclose(jac, jac.diagonal().diag_embed()):
+                raise AssertionError("Off-diagonal elements are not zero")
+            expected = jac.diagonal().abs().log().reshape(x.shape)
+        # 3. Transforms with non-0 off-diagonal elements
+        else:
+            if isinstance(transform, CorrCholeskyTransform):
+                jac = jacobian(lambda x: tril_matrix_to_vec(transform(x), diag=-1), x_)
+            elif isinstance(transform.inv, CorrCholeskyTransform):
+                jac = jacobian(
+                    lambda x: transform(vec_to_tril_matrix(x, diag=-1)),
+                    tril_matrix_to_vec(x_, diag=-1),
+                )
+            elif isinstance(transform, StickBreakingTransform):
+                jac = jacobian(lambda x: transform(x)[..., :-1], x_)
+            else:
+                jac = jacobian(transform, x_)
+
+            # Note that jacobian will have shape (batch_dims, y_event_dims, batch_dims, x_event_dims)
+            # However, batches are independent so this can be converted into a (batch_dims, event_dims, event_dims)
+            # after reshaping the event dims (see above) to give a batched square matrix whose determinant
+            # can be computed.
+            gather_idx_shape = list(jac.shape)
+            gather_idx_shape[-2] = 1
+            gather_idxs = (
+                torch.arange(n, device=device)
+                .reshape((n,) + (1,) * (len(jac.shape) - 1))
+                .expand(gather_idx_shape)
+            )
+            jac = jac.gather(-2, gather_idxs).squeeze(-2)
+            out_ndims = jac.shape[-2]
+            jac = jac[
+                ..., :out_ndims
+            ]  # Remove extra zero-valued dims (for inverse stick-breaking).
+            expected = torch.slogdet(jac).logabsdet
+
+        if not torch.allclose(actual, expected, atol=1e-5):
+            raise AssertionError("Jacobian computation does not match expected")
+
+    @parametrize(
+        "event_dims", [(0,), (1,), (2, 3), (0, 1, 2), (1, 2, 0), (2, 0, 1)], name_fn=str
+    )
+    def test_compose_affine(self, device, event_dims):
+        transforms = [
+            AffineTransform(torch.zeros((1,) * e, device=device), 1, event_dim=e)
+            for e in event_dims
+        ]
+        transform = ComposeTransform(transforms)
+        if transform.codomain.event_dim != max(event_dims):
+            raise AssertionError(
+                f"Expected codomain.event_dim {max(event_dims)}, got {transform.codomain.event_dim}"
+            )
+        if transform.domain.event_dim != max(event_dims):
+            raise AssertionError(
+                f"Expected domain.event_dim {max(event_dims)}, got {transform.domain.event_dim}"
+            )
+
+        base_dist = Normal(
+            torch.tensor(0.0, device=device),
+            torch.tensor(1.0, device=device),
+        )
+        if transform.domain.event_dim:
+            base_dist = base_dist.expand((1,) * transform.domain.event_dim)
+        dist = TransformedDistribution(base_dist, transform.parts)
+        if dist.support.event_dim != max(event_dims):
+            raise AssertionError(
+                f"Expected support.event_dim {max(event_dims)}, got {dist.support.event_dim}"
+            )
+
+        base_dist = Dirichlet(torch.ones(5, device=device))
+        if transform.domain.event_dim > 1:
+            base_dist = base_dist.expand((1,) * (transform.domain.event_dim - 1))
+        dist = TransformedDistribution(base_dist, transforms)
+        if dist.support.event_dim != max(1, *event_dims):
+            raise AssertionError(
+                f"Expected support.event_dim {max(1, *event_dims)}, got {dist.support.event_dim}"
+            )
+
+    @parametrize("batch_shape", [(), (6,), (5, 4)], name_fn=str)
+    def test_compose_reshape(self, device, batch_shape):
+        transforms = [
+            ReshapeTransform((), ()),
+            ReshapeTransform((2,), (1, 2)),
+            ReshapeTransform((3, 1, 2), (6,)),
+            ReshapeTransform((6,), (2, 3)),
+        ]
+        transform = ComposeTransform(transforms)
+        if transform.codomain.event_dim != 2:
+            raise AssertionError(
+                f"Expected codomain.event_dim 2, got {transform.codomain.event_dim}"
+            )
+        if transform.domain.event_dim != 2:
+            raise AssertionError(
+                f"Expected domain.event_dim 2, got {transform.domain.event_dim}"
+            )
+        data = torch.randn(batch_shape + (3, 2), device=device)
+        if transform(data).shape != batch_shape + (2, 3):
+            raise AssertionError(
+                f"Expected shape {batch_shape + (2, 3)}, got {transform(data).shape}"
+            )
+
+        dist = TransformedDistribution(Normal(data, 1), transforms)
+        if dist.batch_shape != batch_shape:
+            raise AssertionError(
+                f"Expected batch_shape {batch_shape}, got {dist.batch_shape}"
+            )
+        if dist.event_shape != (2, 3):
+            raise AssertionError(f"Expected event_shape (2, 3), got {dist.event_shape}")
+        if dist.support.event_dim != 2:
+            raise AssertionError(
+                f"Expected support.event_dim 2, got {dist.support.event_dim}"
+            )
+
+    @parametrize("sample_shape", [(), (7,)], name_fn=str)
+    @parametrize("transform_dim", [0, 1, 2])
+    @parametrize("base_batch_dim", [0, 1, 2])
+    @parametrize("base_event_dim", [0, 1, 2])
+    @parametrize("num_transforms", [0, 1, 2, 3])
+    def test_transformed_distribution(
+        self,
+        device,
+        base_batch_dim,
+        base_event_dim,
+        transform_dim,
+        num_transforms,
+        sample_shape,
+    ):
+        shape = torch.Size([2, 3, 4, 5])
+        base_dist = Normal(
+            torch.tensor(0.0, device=device),
+            torch.tensor(1.0, device=device),
+        )
+        base_dist = base_dist.expand(shape[4 - base_batch_dim - base_event_dim :])
+        if base_event_dim:
+            base_dist = Independent(base_dist, base_event_dim)
+        transforms = [
+            AffineTransform(torch.zeros(shape[4 - transform_dim :], device=device), 1),
+            ReshapeTransform((4, 5), (20,)),
+            ReshapeTransform((3, 20), (6, 10)),
+        ]
+        transforms = transforms[:num_transforms]
+        transform = ComposeTransform(transforms)
+
+        # Check validation in .__init__().
+        if base_batch_dim + base_event_dim < transform.domain.event_dim:
+            with self.assertRaises(ValueError):
+                TransformedDistribution(base_dist, transforms)
+            return
+        d = TransformedDistribution(base_dist, transforms)
+
+        # Check sampling is sufficiently expanded.
+        x = d.sample(sample_shape)
+        expected_shape = sample_shape + d.batch_shape + d.event_shape
+        if x.shape != expected_shape:
+            raise AssertionError(
+                f"Expected sample shape {expected_shape}, got {x.shape}"
+            )
+        num_unique = len(set(x.reshape(-1).tolist()))
+        if num_unique < 0.9 * x.numel():
+            raise AssertionError(
+                f"Expected num_unique >= {0.9 * x.numel()}, got {num_unique}"
+            )
+
+        # Check log_prob shape on full samples.
+        log_prob = d.log_prob(x)
+        if log_prob.shape != sample_shape + d.batch_shape:
+            raise AssertionError(
+                f"Expected log_prob shape {sample_shape + d.batch_shape}, got {log_prob.shape}"
+            )
+
+        # Check log_prob shape on partial samples.
+        y = x
+        while y.dim() > len(d.event_shape):
+            y = y[0]
+        log_prob = d.log_prob(y)
+        if log_prob.shape != d.batch_shape:
+            raise AssertionError(
+                f"Expected log_prob shape {d.batch_shape}, got {log_prob.shape}"
+            )
+
+    def test_save_load_transform(self, device):
+        # Evaluating `log_prob` populates the `_inv` cache, which can
+        # contain reference cycles. Here, we check that `__getstate__`
+        # drops the cache, and that we can evaluate the density after loading.
+        dist = TransformedDistribution(
+            Normal(
+                torch.tensor(0.0, device=device),
+                torch.tensor(1.0, device=device),
+            ),
+            [AffineTransform(2, 3)],
+        )
+        x = torch.linspace(0, 1, 10, device=device)
+        log_prob = dist.log_prob(x)
+        stream = io.BytesIO()
+        torch.save(dist, stream)
+        stream.seek(0)
+        with torch.serialization.safe_globals(
+            [TransformedDistribution, AffineTransform, Normal]
+        ):
+            other = torch.load(stream)
+        if not torch.allclose(log_prob, other.log_prob(x)):
+            raise AssertionError("Loaded distribution log_prob does not match original")
+
+    @parametrize("transform_case", ALL_TRANSFORM_CASES, name_fn=transform_case_id)
+    def test_transform_sign(self, device, transform_case):
+        transform: Transform = get_transform(transform_case, device)
+        try:
+            sign = transform.sign
+        except NotImplementedError:
+            self.skipTest("Not implemented.")
+
+        x = generate_data(transform, device).requires_grad_()
+        y = transform(x).sum()
+        (derivatives,) = grad(y, [x])
+        if not torch.less(
+            torch.as_tensor(0.0, device=device), derivatives * sign
+        ).all():
+            raise AssertionError("Transform sign test failed")
 
 
-@pytest.mark.parametrize("transform", ALL_TRANSFORMS, ids=transform_id)
-def test_transform_sign(transform: Transform):
-    try:
-        sign = transform.sign
-    except NotImplementedError:
-        pytest.skip("Not implemented.")
-
-    x = generate_data(transform).requires_grad_()
-    y = transform(x).sum()
-    (derivatives,) = grad(y, [x])
-    if not torch.less(torch.as_tensor(0.0), derivatives * sign).all():
-        raise AssertionError("Transform sign test failed")
+instantiate_device_type_tests(TestTransforms, globals())
 
 
 if __name__ == "__main__":
