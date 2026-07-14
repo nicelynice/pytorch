@@ -566,7 +566,6 @@ class TestTransforms(TestCase):
             transform.inv, ReshapeTransform
         ):
             expected = x.new_zeros(x.shape[x.dim() - transform.domain.event_dim])
-            expected = x.new_zeros(x.shape[x.dim() - transform.domain.event_dim])
         # 2. Transforms with 0 off-diagonal elements
         elif transform.domain.event_dim == 0:
             jac = jacobian(transform, x_)
